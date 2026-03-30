@@ -33,18 +33,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MPC_MODE 1
-#define TAU 0.03f
-#define K_GAIN 7430.0f
 
-#define DT 0.01f
-#define HORIZON 10
 #define VOLTAGE_MAX 12.0f
-#define LAMBDA 0.0000f
 #define MAX_PWM 999
-#define TARGET_VEL 0.0f
-#define TARGET_POS 1000.0f
-#define FLIP_INTERVAL_MS 5000
 
 /* USER CODE END PD */
 
@@ -75,6 +66,8 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+
 int _write(int file, char *ptr, int len)
 {
     HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, HAL_MAX_DELAY);
@@ -87,8 +80,6 @@ void motor_set(float motor_voltage)
 
     if (u > 1.0f) u = 1.0f;
     if (u < -1.0f) u = -1.0f;
-
-    // Deadband — below ~15% duty the motor buzzes but won't spin
     if (u > 0.01f && u < 0.15f) u = 0.15f;
     if (u < -0.01f && u > -0.15f) u = -0.15f;
 
@@ -117,126 +108,6 @@ void motor_stop(void)
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
-}
-
-void predict(float pos, float vel, float voltage_target,
-             float *next_pos, float *next_vel)
-{
-    float omega_ss = K_GAIN * (voltage_target / VOLTAGE_MAX);
-    float decay = expf(-DT / TAU);
-
-    *next_vel = omega_ss + (vel - omega_ss) * decay;
-    *next_pos = pos + omega_ss * DT + (vel - omega_ss) * TAU * (1.0f - decay);
-}
-
-float mpc_compute(float current_pos, float current_vel, float target_pos, float target_vel)
-{
-    float best_voltage = 0.0f;
-    float best_cost = 1e10f;
-
-    for (int i = -20; i <= 20; i++)
-    {
-        float voltage_target = VOLTAGE_MAX * (float)i / 20.0f;
-
-        float pred_pos = current_pos;
-        float pred_vel = current_vel;
-        float cost = 0.0f;
-
-        for (int k = 0; k < HORIZON; k++)
-        {
-            float new_pos, new_vel;
-            predict(pred_pos, pred_vel, voltage_target, &new_pos, &new_vel);
-            pred_pos = new_pos;
-            pred_vel = new_vel;
-
-            float pos_error = target_pos - pred_pos;
-            cost += pos_error * pos_error;
-        }
-
-        // Normalize velocity error relative to VOLTAGE_MAX
-        float vel_error = (target_vel - pred_vel) / K_GAIN;
-        cost += 7000.0f * vel_error * vel_error;
-
-        if (cost < best_cost)
-        {
-            best_cost = cost;
-            best_voltage = voltage_target;
-        }
-    }
-    return best_voltage;
-}
-
-void run_step_response(void)
-{
-    __HAL_TIM_SET_COUNTER(&htim3, 0);
-    printf("time_ms,position,velocity\r\n");
-
-    // Apply step: forward at 70% duty
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 700);
-
-    int16_t prev = 0;
-    for (int i = 0; i < 200; i++)  // 2 seconds of data
-    {
-        HAL_Delay(10);
-        int16_t count = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
-        int16_t vel = count - prev;
-        printf("%d,%d,%d\r\n", i * 10, count, vel);
-        prev = count;
-    }
-
-    motor_stop();
-    printf("DONE\r\n");
-    while (1) {}  // halt
-}
-
-void run_mpc(void)
-{
-    __HAL_TIM_SET_COUNTER(&htim3, 0);
-
-    float target_pos = TARGET_POS;
-    float target_vel = TARGET_VEL;
-    int16_t prev_count = 0;
-    int time_ms = 0;
-
-    while (1)
-    {
-        int16_t count = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
-        float position = (float)count;
-        float velocity = (float)(count - prev_count) / DT;
-        prev_count = count;
-
-        // MPC
-        float motor_voltage = mpc_compute(position, velocity, target_pos, target_vel);
-
-        float error = target_pos - position;
-
-        if (fabs(error) < 20.0) {
-        	motor_stop();
-        } else {
-        	motor_set(motor_voltage);
-        }
-
-        // Print only every 100ms to not slow down the loop
-        if (time_ms % 100 == 0)
-        {
-            printf("%d,%d,%d,%d,%d\r\n",
-                   time_ms,
-                   (int)target_pos,
-                   (int)position,
-                   (int)velocity,
-                   (int)motor_voltage);
-        }
-
-        time_ms += 10;
-        if (time_ms % FLIP_INTERVAL_MS == 0)
-        {
-            target_pos = -target_pos;
-        }
-
-        HAL_Delay(10);
-    }
 }
 
 /* USER CODE END 0 */
@@ -277,65 +148,51 @@ int main(void)
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   __HAL_TIM_SET_COUNTER(&htim3, 0);
-  printf("System started\r\n");
-  #if MPC_MODE == 0
-		printf("=== STEP RESPONSE TEST ===\r\n");
-		printf("Copy this output and send to Claude\r\n");
-		run_step_response();
-  #else
-		printf("=== MPC POSITION CONTROL ===\r\n");
-		printf("tau=%d K=%d target=%d\r\n",
-		       (int)(TAU * 10000),
-		       (int)K_GAIN,
-		       (int)TARGET_POS);
-		run_mpc();
-  #endif
+  printf("\r\n\nSystem started\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  printf("time_ms,position,velocity\r\n");
+  motor_set(12);
+
+  int16_t start = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
+  int16_t prev  = start;
+  uint32_t t0   = HAL_GetTick();
+  uint32_t last_print = t0;
+
+  while (HAL_GetTick() - t0 < 1000)
+  {
+      uint32_t now = HAL_GetTick();
+      if (now - last_print >= 20)
+      {
+          int16_t count = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
+          int16_t vel   = count - prev;
+          printf("%lu,%d,%d\r\n", now - t0, count - start, vel);
+          prev = count;
+          last_print = now;
+      }
+  }
+
+  motor_stop();
+
+  while (HAL_GetTick() - t0 < 2000)
+    {
+        uint32_t now = HAL_GetTick();
+        if (now - last_print >= 20)
+        {
+            int16_t count = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
+            int16_t vel   = count - prev;
+            printf("%lu,%d,%d\r\n", now - t0, count - start, vel);
+            prev = count;
+            last_print = now;
+        }
+    }
+
+
+  printf("DONE\r\n");
   while (1)
   {
-//	// Reset counter before forward
-//	__HAL_TIM_SET_COUNTER(&htim3, 0);
-//
-//	// Forward
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-//	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 700);
-//	HAL_Delay(3000);
-//
-//	int16_t count = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
-//	printf("Forward: %d ticks\r\n", count);
-//
-//	// Stop
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-//	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
-//	HAL_Delay(2000);
-//
-//	// Reset counter before reverse
-//	__HAL_TIM_SET_COUNTER(&htim3, 0);
-//
-//	// Reverse
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
-//	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 700);
-//	HAL_Delay(3000);
-//
-//	int16_t count2 = (int16_t)__HAL_TIM_GET_COUNTER(&htim3);
-//	printf("Reverse: %d ticks\r\n", count2);
-//
-//	// Stop
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
-//	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-//	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
-//	HAL_Delay(2000);
-
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
