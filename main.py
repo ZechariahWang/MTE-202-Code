@@ -4,7 +4,7 @@ from matplotlib.widgets import Slider, RadioButtons
 import csv
 
 time_ms_list, vel_list = [], []
-with open('data.csv', 'r') as f:
+with open('data2.csv', 'r') as f:
     reader = csv.DictReader(f)
     for row in reader:
         time_ms_list.append(int(row['time_ms']))
@@ -70,13 +70,8 @@ def second_order_model(t_acc, t_dec, R, L, J, B, kt, ke, V):
 
     w_ss = kt * V / (R * B + ke * kt)
 
-    # Accel: ω(0)=0, ω'(0)=0
     va, _ = solve_2nd_phase(t_acc, alpha, beta_sq, w_ss, 0.0, 0.0)
-
-    # State at T_SWITCH
     w_d, wd_d = solve_2nd_phase(np.array([T_SWITCH]), alpha, beta_sq, w_ss, 0.0, 0.0)
-
-    # Decel: V=0, carry over state
     vd, _ = solve_2nd_phase(t_dec, alpha, beta_sq, 0.0, w_d[0], wd_d[0])
 
     return va, vd, alpha, beta_sq, zeta, wn
@@ -86,12 +81,11 @@ def second_order_model(t_acc, t_dec, R, L, J, B, kt, ke, V):
 k0, tau0, u0 = 0.9065, 0.1329, 100.0
 
 # Second order
-R0, L0, J0, B0 = 2.143, 1.61e-4, 5.93e-4, 3.07e-3
-kt0, ke0 = 0.0698, 0.0372
+R0, L0, J0, B0 = 4.5292, 0.000496, 0.000392, 0.000226
+kt0, ke0 = 0.08152, 0.11513
 
 V_SUPPLY = 12.0  
 
-# --- Figure: two subplots (accel top, decel bottom) ---
 fig, (ax_acc, ax_dec) = plt.subplots(2, 1, figsize=(14, 9))
 plt.subplots_adjust(bottom=0.35, hspace=0.40, top=0.93, left=0.08, right=0.85)
 
@@ -99,13 +93,11 @@ color_data = '#888888'
 color_acc = '#2563eb'
 color_dec = '#dc2626'
 
-# Scatter measured data (always visible)
-ax_acc.scatter(t_accel, v_accel, s=8, color=color_data, label='Measured', zorder=5)
-ax_dec.scatter(t_decel, v_decel, s=8, color=color_data, label='Measured', zorder=5)
+ax_acc.scatter(t_accel, v_accel, s=8, color=color_data, label='', zorder=5)
+ax_dec.scatter(t_decel, v_decel, s=8, color=color_data, label='', zorder=5)
 
-# Model lines (will be updated)
-line_acc, = ax_acc.plot([], [], color=color_acc, lw=2, label='Model')
-line_dec, = ax_dec.plot([], [], color=color_dec, lw=2, label='Model')
+line_acc, = ax_acc.plot([], [], color=color_acc, lw=2, label='')
+line_dec, = ax_dec.plot([], [], color=color_dec, lw=2, label='')
 
 ax_acc.set_ylabel('Velocity', fontsize=11)
 ax_acc.set_title('Acceleration Phase', fontsize=11)
@@ -124,16 +116,13 @@ rmse_dec_txt = ax_dec.text(0.98, 0.05, '', transform=ax_dec.transAxes,
 
 title_txt = fig.suptitle('First-Order Model', fontsize=13, fontweight='bold')
 
-# Info readout (for 2nd order)
 info_txt = ax_dec.text(0.02, 0.95, '', transform=ax_dec.transAxes, va='top',
                        fontsize=9, fontfamily='monospace',
                        bbox=dict(boxstyle='round,pad=0.4', fc='wheat', alpha=0.8))
 
-# --- Radio button to toggle model ---
 ax_radio = plt.axes([0.87, 0.75, 0.12, 0.10])
 radio = RadioButtons(ax_radio, ('1st Order', '2nd Order'), active=0)
 
-# --- Helper: logarithmic slider ---
 def make_log_slider(rect, label, vmin, vmax, vinit, visible=True):
     """Slider that moves linearly in log10 space; .real_val gives actual value."""
     log_min = np.log10(vmin)
@@ -143,7 +132,6 @@ def make_log_slider(rect, label, vmin, vmax, vinit, visible=True):
     ax_s.set_visible(visible)
     s = Slider(ax_s, label, log_min, log_max, valinit=log_init,
                valfmt='%.4g')
-    # patch the display to show the real value
     s._log_base_min = log_min
     s._log_base_max = log_max
     s.real_val = vinit
@@ -167,15 +155,12 @@ def make_log_slider(rect, label, vmin, vmax, vinit, visible=True):
     s.on_changed(_on_changed)
     return ax_s, s
 
-
-# === First-order sliders (log) ===
 ax_k, s_k = make_log_slider([0.12, 0.26, 0.33, 0.018], 'k', 0.01, 2.0, k0)
 ax_tau, s_tau = make_log_slider([0.12, 0.23, 0.33, 0.018], 'τ (tau)', 0.005, 1.0, tau0)
 
 first_order_sliders = [s_k, s_tau]
 first_order_axes = [ax_k, ax_tau]
 
-# === Second-order sliders (log) ===
 so_slider_defs = [
     ([0.12, 0.26, 0.33, 0.018], 'R (Ω)',    0.01,  5.0,   R0),
     ([0.12, 0.23, 0.33, 0.018], 'L (H)',     0.0001, 0.5,  L0),
@@ -193,13 +178,10 @@ for rect, label, vmin, vmax, vinit in so_slider_defs:
     second_order_axes.append(ax_s)
 
 s_R, s_L, s_J, s_B, s_kt, s_ke = second_order_sliders
-
 current_mode = '1st Order'
-
 
 def rmse(a, b):
     return np.sqrt(np.mean((a - b) ** 2))
-
 
 def refresh():
     if current_mode == '1st Order':
@@ -251,10 +233,8 @@ def refresh():
 
     fig.canvas.draw_idle()
 
-
 def on_slider_change(_):
     refresh()
-
 
 def on_mode_change(label):
     global current_mode
@@ -267,7 +247,6 @@ def on_mode_change(label):
         ax_s.set_visible(not is_1st)
 
     refresh()
-
 
 radio.on_clicked(on_mode_change)
 
